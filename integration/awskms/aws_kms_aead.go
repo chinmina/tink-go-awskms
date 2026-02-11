@@ -49,8 +49,9 @@ func newAWSAEAD(keyID string, kms KMSAPI, name EncryptionContextName) *AWSAEAD {
 	}
 }
 
-// Encrypt encrypts the plaintext with associatedData.
-func (a *AWSAEAD) Encrypt(plaintext, associatedData []byte) ([]byte, error) {
+// EncryptContext encrypts plaintext with associatedData, using ctx for the
+// AWS KMS API call.
+func (a *AWSAEAD) EncryptContext(ctx context.Context, plaintext, associatedData []byte) ([]byte, error) {
 	req := &kms.EncryptInput{
 		KeyId:     aws.String(a.keyID),
 		Plaintext: plaintext,
@@ -59,15 +60,21 @@ func (a *AWSAEAD) Encrypt(plaintext, associatedData []byte) ([]byte, error) {
 		ad := hex.EncodeToString(associatedData)
 		req.EncryptionContext = map[string]string{a.encryptionContextName.String(): ad}
 	}
-	resp, err := a.kms.Encrypt(context.Background(), req)
+	resp, err := a.kms.Encrypt(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	return resp.CiphertextBlob, nil
 }
 
-// Decrypt decrypts the ciphertext and verifies the associated data.
-func (a *AWSAEAD) Decrypt(ciphertext, associatedData []byte) ([]byte, error) {
+// Encrypt encrypts the plaintext with associatedData.
+func (a *AWSAEAD) Encrypt(plaintext, associatedData []byte) ([]byte, error) {
+	return a.EncryptContext(context.Background(), plaintext, associatedData)
+}
+
+// DecryptContext decrypts ciphertext and verifies associatedData, using ctx
+// for the AWS KMS API call.
+func (a *AWSAEAD) DecryptContext(ctx context.Context, ciphertext, associatedData []byte) ([]byte, error) {
 	req := &kms.DecryptInput{
 		KeyId:          aws.String(a.keyID),
 		CiphertextBlob: ciphertext,
@@ -76,9 +83,14 @@ func (a *AWSAEAD) Decrypt(ciphertext, associatedData []byte) ([]byte, error) {
 		ad := hex.EncodeToString(associatedData)
 		req.EncryptionContext = map[string]string{a.encryptionContextName.String(): ad}
 	}
-	resp, err := a.kms.Decrypt(context.Background(), req)
+	resp, err := a.kms.Decrypt(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	return resp.Plaintext, nil
+}
+
+// Decrypt decrypts the ciphertext and verifies the associated data.
+func (a *AWSAEAD) Decrypt(ciphertext, associatedData []byte) ([]byte, error) {
+	return a.DecryptContext(context.Background(), ciphertext, associatedData)
 }

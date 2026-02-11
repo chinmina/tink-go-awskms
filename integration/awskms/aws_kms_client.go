@@ -54,6 +54,9 @@ type awsClient struct {
 	keyURIPrefix          string
 	kms                   KMSAPI
 	encryptionContextName EncryptionContextName
+	// Construction-only fields, cleared after NewClientWithOptions returns.
+	buildCtx        context.Context
+	pendingCredPath string
 }
 
 // ClientOption is an interface for defining options that are passed to
@@ -74,16 +77,23 @@ func (o option) set(a *awsClient) error { return o(a) }
 // and https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html#cli-configure-files-format.
 func WithCredentialPath(credentialPath string) ClientOption {
 	return option(func(a *awsClient) error {
-		if a.kms != nil {
+		if a.kms != nil || a.pendingCredPath != "" {
 			return errors.New("WithCredentialPath option cannot be used, KMS client already set")
 		}
+		a.pendingCredPath = credentialPath
+		return nil
+	})
+}
 
-		k, err := getKMSFromCredentialPath(a.keyURIPrefix, credentialPath)
-		if err != nil {
-			return err
+// WithContext provides a context for use during client construction.
+// It is used for AWS configuration loading and KMS client creation.
+// The context is not retained after construction completes.
+func WithContext(ctx context.Context) ClientOption {
+	return option(func(a *awsClient) error {
+		if a.buildCtx != nil {
+			return errors.New("WithContext option already set")
 		}
-
-		a.kms = k
+		a.buildCtx = ctx
 		return nil
 	})
 }
@@ -96,7 +106,7 @@ func WithCredentialPath(credentialPath string) ClientOption {
 // requests will fail.
 func WithKMS(kms KMSAPI) ClientOption {
 	return option(func(a *awsClient) error {
-		if a.kms != nil {
+		if a.kms != nil || a.pendingCredPath != "" {
 			return errors.New("WithKMS option cannot be used, KMS client already set")
 		}
 		a.kms = kms
@@ -178,17 +188,34 @@ func NewClientWithOptions(uriPrefix string, opts ...ClientOption) (registry.KMSC
 		}
 	}
 
-	// Populate values not defined via options.
-	if a.kms == nil {
-		k, err := getKMS(uriPrefix)
+	// Determine context for KMS client creation.
+	ctx := a.buildCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Create KMS client if not already set.
+	if a.pendingCredPath != "" {
+		k, err := getKMSFromCredentialPath(ctx, uriPrefix, a.pendingCredPath)
+		if err != nil {
+			return nil, err
+		}
+		a.kms = k
+	} else if a.kms == nil {
+		k, err := getKMS(ctx, uriPrefix)
 		if err != nil {
 			return nil, err
 		}
 		a.kms = k
 	}
+
 	if a.encryptionContextName == 0 {
 		a.encryptionContextName = AssociatedData
 	}
+
+	// Clear construction-only fields.
+	a.buildCtx = nil
+	a.pendingCredPath = ""
 
 	return a, nil
 }
@@ -282,13 +309,13 @@ func (c *awsClient) GetAEAD(keyURI string) (tink.AEAD, error) {
 	return newAWSAEAD(keyID, c.kms, c.encryptionContextName), nil
 }
 
-func getKMS(uriPrefix string) (*kms.Client, error) {
+func getKMS(ctx context.Context, uriPrefix string) (*kms.Client, error) {
 	r, err := getRegion(uriPrefix)
 	if err != nil {
 		return nil, err
 	}
 
-	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(r))
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(r))
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +323,7 @@ func getKMS(uriPrefix string) (*kms.Client, error) {
 	return kms.NewFromConfig(cfg), nil
 }
 
-func getKMSFromCredentialPath(uriPrefix string, credentialPath string) (*kms.Client, error) {
+func getKMSFromCredentialPath(ctx context.Context, uriPrefix string, credentialPath string) (*kms.Client, error) {
 	r, err := getRegion(uriPrefix)
 	if err != nil {
 		return nil, err
@@ -309,7 +336,7 @@ func getKMSFromCredentialPath(uriPrefix string, credentialPath string) (*kms.Cli
 	accessKey, secretKey, err := extractCredsCSV(credentialPath)
 	switch err {
 	case nil:
-		cfg, err := config.LoadDefaultConfig(context.Background(),
+		cfg, err := config.LoadDefaultConfig(ctx,
 			config.WithRegion(r),
 			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
 		)
@@ -321,7 +348,7 @@ func getKMSFromCredentialPath(uriPrefix string, credentialPath string) (*kms.Cli
 		return nil, err
 	default:
 		// Fallback to load the credential path as .ini shared credentials.
-		cfg, err := config.LoadDefaultConfig(context.Background(),
+		cfg, err := config.LoadDefaultConfig(ctx,
 			config.WithRegion(r),
 			config.WithSharedCredentialsFiles([]string{credentialPath}),
 			config.WithSharedConfigProfile("default"),
