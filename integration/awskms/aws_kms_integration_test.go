@@ -16,6 +16,7 @@ package awskms_test
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -191,5 +192,71 @@ func TestKMSEnvelopeAEADEncryptAndDecrypt(t *testing.T) {
 				t.Errorf("a.Decrypt() = %q, want %q", gotPlaintext, plaintext)
 			}
 		}
+	}
+}
+
+func TestEncryptContextDecryptContext(t *testing.T) {
+	credFilePath := testFilePath(t, credCSVFile)
+	client, err := awskms.NewClientWithOptions(keyURI, awskms.WithCredentialPath(credFilePath))
+	if err != nil {
+		t.Fatalf("error setting up AWS client: %v", err)
+	}
+	a, err := client.GetAEAD(keyURI)
+	if err != nil {
+		t.Fatalf("client.GetAEAD(keyURI) err = %v, want nil", err)
+	}
+	aead := a.(*awskms.AWSAEAD)
+
+	ctx := context.Background()
+	plaintext := []byte("plaintext")
+	associatedData := []byte("associatedData")
+
+	ciphertext, err := aead.EncryptContext(ctx, plaintext, associatedData)
+	if err != nil {
+		t.Fatalf("aead.EncryptContext(ctx, plaintext, associatedData) err = %v, want nil", err)
+	}
+	gotPlaintext, err := aead.DecryptContext(ctx, ciphertext, associatedData)
+	if err != nil {
+		t.Fatalf("aead.DecryptContext(ctx, ciphertext, associatedData) err = %v, want nil", err)
+	}
+	if !bytes.Equal(gotPlaintext, plaintext) {
+		t.Errorf("aead.DecryptContext() = %q, want %q", gotPlaintext, plaintext)
+	}
+
+	// Invalid associated data should fail.
+	_, err = aead.DecryptContext(ctx, ciphertext, []byte("invalidAssociatedData"))
+	if err == nil {
+		t.Error("aead.DecryptContext(ctx, ciphertext, invalidAssociatedData) err = nil, want error")
+	}
+}
+
+func TestNewClientWithContextAndCredentials(t *testing.T) {
+	credFilePath := testFilePath(t, credCSVFile)
+	ctx := context.Background()
+
+	client, err := awskms.NewClientWithOptions(keyURI,
+		awskms.WithContext(ctx),
+		awskms.WithCredentialPath(credFilePath),
+	)
+	if err != nil {
+		t.Fatalf("awskms.NewClientWithOptions() err = %v, want nil", err)
+	}
+	a, err := client.GetAEAD(keyURI)
+	if err != nil {
+		t.Fatalf("client.GetAEAD(keyURI) err = %v, want nil", err)
+	}
+
+	plaintext := []byte("plaintext")
+	associatedData := []byte("associatedData")
+	ciphertext, err := a.Encrypt(plaintext, associatedData)
+	if err != nil {
+		t.Fatalf("a.Encrypt(plaintext, associatedData) err = %v, want nil", err)
+	}
+	gotPlaintext, err := a.Decrypt(ciphertext, associatedData)
+	if err != nil {
+		t.Fatalf("a.Decrypt(ciphertext, associatedData) err = %v, want nil", err)
+	}
+	if !bytes.Equal(gotPlaintext, plaintext) {
+		t.Errorf("a.Decrypt() = %q, want %q", gotPlaintext, plaintext)
 	}
 }

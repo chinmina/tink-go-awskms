@@ -452,3 +452,199 @@ func TestEncryptionContextName_defaultEncryptionContextName(t *testing.T) {
 		})
 	}
 }
+
+func TestEncryptContextDecryptContext(t *testing.T) {
+	keyARN := "arn:aws:kms:us-east-2:235739564943:key/3ee50705-5a82-4f5b-9753-05c4f473922f"
+	keyURI := "aws-kms://arn:aws:kms:us-east-2:235739564943:key/3ee50705-5a82-4f5b-9753-05c4f473922f"
+	fakekms, err := fakeawskms.New([]string{keyARN})
+	if err != nil {
+		t.Fatalf("fakeawskms.New() failed: %v", err)
+	}
+
+	client, err := NewClientWithOptions("aws-kms://", WithKMS(fakekms))
+	if err != nil {
+		t.Fatalf("NewClientWithOptions() failed: %v", err)
+	}
+
+	a, err := client.GetAEAD(keyURI)
+	if err != nil {
+		t.Fatalf("client.GetAEAD(keyURI) err = %v, want nil", err)
+	}
+	aead := a.(*AWSAEAD)
+
+	plaintext := []byte("plaintext")
+	associatedData := []byte("associatedData")
+	ctx := context.Background()
+
+	// Roundtrip with Context methods.
+	ciphertext, err := aead.EncryptContext(ctx, plaintext, associatedData)
+	if err != nil {
+		t.Fatalf("aead.EncryptContext(ctx, plaintext, associatedData) err = %v, want nil", err)
+	}
+	decrypted, err := aead.DecryptContext(ctx, ciphertext, associatedData)
+	if err != nil {
+		t.Fatalf("aead.DecryptContext(ctx, ciphertext, associatedData) err = %v, want nil", err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Errorf("decrypted = %q, want %q", decrypted, plaintext)
+	}
+
+	// Cross-compatibility: encrypt with Encrypt, decrypt with DecryptContext.
+	ciphertext2, err := aead.Encrypt(plaintext, associatedData)
+	if err != nil {
+		t.Fatalf("aead.Encrypt(plaintext, associatedData) err = %v, want nil", err)
+	}
+	decrypted2, err := aead.DecryptContext(ctx, ciphertext2, associatedData)
+	if err != nil {
+		t.Fatalf("aead.DecryptContext(ctx, ciphertext2, associatedData) err = %v, want nil", err)
+	}
+	if !bytes.Equal(decrypted2, plaintext) {
+		t.Errorf("decrypted = %q, want %q", decrypted2, plaintext)
+	}
+
+	// Cross-compatibility: encrypt with EncryptContext, decrypt with Decrypt.
+	ciphertext3, err := aead.EncryptContext(ctx, plaintext, associatedData)
+	if err != nil {
+		t.Fatalf("aead.EncryptContext(ctx, plaintext, associatedData) err = %v, want nil", err)
+	}
+	decrypted3, err := aead.Decrypt(ciphertext3, associatedData)
+	if err != nil {
+		t.Fatalf("aead.Decrypt(ciphertext3, associatedData) err = %v, want nil", err)
+	}
+	if !bytes.Equal(decrypted3, plaintext) {
+		t.Errorf("decrypted = %q, want %q", decrypted3, plaintext)
+	}
+
+	// Invalid associated data should fail.
+	_, err = aead.DecryptContext(ctx, ciphertext, []byte("invalidAssociatedData"))
+	if err == nil {
+		t.Error("aead.DecryptContext(ctx, ciphertext, invalidAssociatedData) err = nil, want error")
+	}
+
+	// Invalid ciphertext should fail.
+	_, err = aead.DecryptContext(ctx, []byte("invalidCiphertext"), associatedData)
+	if err == nil {
+		t.Error("aead.DecryptContext(ctx, invalidCiphertext, associatedData) err = nil, want error")
+	}
+}
+
+func TestEncryptContextDecryptContext_emptyAssociatedData(t *testing.T) {
+	keyARN := "arn:aws:kms:us-east-2:235739564943:key/3ee50705-5a82-4f5b-9753-05c4f473922f"
+	keyURI := "aws-kms://arn:aws:kms:us-east-2:235739564943:key/3ee50705-5a82-4f5b-9753-05c4f473922f"
+	fakekms, err := fakeawskms.New([]string{keyARN})
+	if err != nil {
+		t.Fatalf("fakeawskms.New() failed: %v", err)
+	}
+
+	client, err := NewClientWithOptions("aws-kms://", WithKMS(fakekms))
+	if err != nil {
+		t.Fatalf("NewClientWithOptions() failed: %v", err)
+	}
+
+	a, err := client.GetAEAD(keyURI)
+	if err != nil {
+		t.Fatalf("client.GetAEAD(keyURI) err = %v, want nil", err)
+	}
+	aead := a.(*AWSAEAD)
+
+	plaintext := []byte("plaintext")
+	ctx := context.Background()
+
+	// Empty associated data.
+	ciphertext, err := aead.EncryptContext(ctx, plaintext, []byte{})
+	if err != nil {
+		t.Fatalf("aead.EncryptContext(ctx, plaintext, emptyAD) err = %v, want nil", err)
+	}
+	decrypted, err := aead.DecryptContext(ctx, ciphertext, []byte{})
+	if err != nil {
+		t.Fatalf("aead.DecryptContext(ctx, ciphertext, emptyAD) err = %v, want nil", err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Errorf("decrypted = %q, want %q", decrypted, plaintext)
+	}
+
+	// Nil associated data should also work.
+	decrypted2, err := aead.DecryptContext(ctx, ciphertext, nil)
+	if err != nil {
+		t.Fatalf("aead.DecryptContext(ctx, ciphertext, nil) err = %v, want nil", err)
+	}
+	if !bytes.Equal(decrypted2, plaintext) {
+		t.Errorf("decrypted = %q, want %q", decrypted2, plaintext)
+	}
+}
+
+func TestWithContext(t *testing.T) {
+	keyARN := "arn:aws:kms:us-east-2:235739564943:key/3ee50705-5a82-4f5b-9753-05c4f473922f"
+	keyURI := "aws-kms://arn:aws:kms:us-east-2:235739564943:key/3ee50705-5a82-4f5b-9753-05c4f473922f"
+	fakekms, err := fakeawskms.New([]string{keyARN})
+	if err != nil {
+		t.Fatalf("fakeawskms.New() failed: %v", err)
+	}
+
+	client, err := NewClientWithOptions("aws-kms://", WithContext(context.Background()), WithKMS(fakekms))
+	if err != nil {
+		t.Fatalf("NewClientWithOptions() failed: %v", err)
+	}
+
+	a, err := client.GetAEAD(keyURI)
+	if err != nil {
+		t.Fatalf("client.GetAEAD(keyURI) err = %v, want nil", err)
+	}
+
+	plaintext := []byte("plaintext")
+	associatedData := []byte("associatedData")
+	ciphertext, err := a.Encrypt(plaintext, associatedData)
+	if err != nil {
+		t.Fatalf("a.Encrypt(plaintext, associatedData) err = %v, want nil", err)
+	}
+	decrypted, err := a.Decrypt(ciphertext, associatedData)
+	if err != nil {
+		t.Fatalf("a.Decrypt(ciphertext, associatedData) err = %v, want nil", err)
+	}
+	if !bytes.Equal(decrypted, plaintext) {
+		t.Errorf("decrypted = %q, want %q", decrypted, plaintext)
+	}
+}
+
+func TestWithContext_RepeatedFails(t *testing.T) {
+	keyARN := "arn:aws:kms:us-east-2:235739564943:key/3ee50705-5a82-4f5b-9753-05c4f473922f"
+	fakekms, err := fakeawskms.New([]string{keyARN})
+	if err != nil {
+		t.Fatalf("fakeawskms.New() failed: %v", err)
+	}
+
+	_, err = NewClientWithOptions("aws-kms://",
+		WithContext(context.Background()),
+		WithContext(context.Background()),
+		WithKMS(fakekms),
+	)
+	if err == nil {
+		t.Fatal("NewClientWithOptions(_, WithContext(_), WithContext(_), WithKMS(_)) err = nil, want error")
+	}
+}
+
+func TestWithContext_WithCredentialPath(t *testing.T) {
+	srcDir, ok := os.LookupEnv("TEST_SRCDIR")
+	if !ok {
+		t.Skip("TEST_SRCDIR not set")
+	}
+	workspaceDir, ok := os.LookupEnv("TEST_WORKSPACE")
+	if !ok {
+		t.Skip("TEST_WORKSPACE not set")
+	}
+
+	uriPrefix := "aws-kms://arn:aws-us-gov:kms:us-gov-east-1:235739564943:key/"
+	credFile := filepath.Join(srcDir, workspaceDir, "testdata/aws/credentials.csv")
+
+	// WithContext before WithCredentialPath.
+	_, err := NewClientWithOptions(uriPrefix, WithContext(context.Background()), WithCredentialPath(credFile))
+	if err != nil {
+		t.Errorf("NewClientWithOptions(_, WithContext(_), WithCredentialPath(_)) err = %v, want nil", err)
+	}
+
+	// WithCredentialPath before WithContext (order independence).
+	_, err = NewClientWithOptions(uriPrefix, WithCredentialPath(credFile), WithContext(context.Background()))
+	if err != nil {
+		t.Errorf("NewClientWithOptions(_, WithCredentialPath(_), WithContext(_)) err = %v, want nil", err)
+	}
+}
