@@ -158,11 +158,18 @@ func WithEncryptionContextName(name EncryptionContextName) ClientOption {
 // NewClientWithOptions returns a [registry.KMSClient] which wraps an AWS KMS
 // client and will handle keys whose URIs start with uriPrefix.
 //
-// By default, the client will use default credentials.
+// By default, the client will use default credentials. Use [WithKMS] to provide
+// a client if you'd like to use a specific context or other AWS options.
 //
 // AEAD primitives produced by this client will use [AssociatedData] when
 // serializing associated data.
 func NewClientWithOptions(uriPrefix string, opts ...ClientOption) (registry.KMSClient, error) {
+	return newClientWithOptions(uriPrefix, opts...)
+}
+
+// Creates the client, returning the internal struct. For use with
+// [NewClientWithOptions] and [NewAEADWithContext].
+func newClientWithOptions(uriPrefix string, opts ...ClientOption) (*awsClient, error) {
 	if !strings.HasPrefix(strings.ToLower(uriPrefix), awsPrefix) {
 		return nil, fmt.Errorf("uriPrefix must start with %q, but got %q", awsPrefix, uriPrefix)
 	}
@@ -193,72 +200,6 @@ func NewClientWithOptions(uriPrefix string, opts ...ClientOption) (registry.KMSC
 	return a, nil
 }
 
-// NewClient returns a KMSClient backed by AWS KMS using default credentials to
-// handle keys whose URIs start with uriPrefix.
-//
-// uriPrefix must have the following format:
-//
-//	aws-kms://arn:<partition>:kms:<region>:[<path>]
-//
-// See https://docs.aws.amazon.com/IAM/latest/UserGuide/reference-arns.html
-//
-// AEAD primitives produced by this client will use [LegacyAdditionalData] when
-// serializing associated data.
-//
-// Deprecated: Instead, use [NewClientWithOptions].
-//
-//	awskms.NewClientWithOptions(uriPrefix)
-func NewClient(uriPrefix string) (registry.KMSClient, error) {
-	return NewClientWithOptions(uriPrefix, WithEncryptionContextName(LegacyAdditionalData))
-}
-
-// NewClientWithCredentials returns a KMSClient backed by AWS KMS using the given
-// credentials to handle keys whose URIs start with uriPrefix.
-//
-// uriPrefix must have the following format:
-//
-//	aws-kms://arn:<partition>:kms:<region>:[<path>]
-//
-// See https://docs.aws.amazon.com/IAM/latest/UserGuide/reference-arns.html
-//
-// credentialPath can specify a file in CSV format as provided in the IAM
-// console or an INI-style credentials file.
-//
-// See https://docs.aws.amazon.com/cli/latest/userguide/cli-authentication-user.html#cli-authentication-user-configure-csv
-// and https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html#cli-configure-files-format.
-//
-// AEAD primitives produced by this client will use [LegacyAdditionalData] when
-// serializing associated data.
-//
-// Deprecated: Instead use [NewClientWithOptions] and [WithCredentialPath].
-//
-//	awskms.NewClientWithOptions(uriPrefix, awskms.WithCredentialPath(credentialPath))
-func NewClientWithCredentials(uriPrefix string, credentialPath string) (registry.KMSClient, error) {
-	return NewClientWithOptions(uriPrefix, WithCredentialPath(credentialPath), WithEncryptionContextName(LegacyAdditionalData))
-}
-
-// NewClientWithKMS returns a KMSClient backed by AWS KMS using the provided
-// instance of the AWS SDK KMS client.
-//
-// The caller is responsible for ensuring that the region specified in the KMS
-// client is consistent with the region specified within uriPrefix.
-//
-// uriPrefix must have the following format:
-//
-//	aws-kms://arn:<partition>:kms:<region>:[<path>]
-//
-// See https://docs.aws.amazon.com/IAM/latest/UserGuide/reference-arns.html
-//
-// AEAD primitives produced by this client will use [LegacyAdditionalData] when
-// serializing associated data.
-//
-// Deprecated: Instead use [NewClientWithOptions] and [WithKMS].
-//
-//	awskms.NewClientWithOptions(uriPrefix, awskms.WithKMS(kms))
-func NewClientWithKMS(uriPrefix string, kms KMSAPI) (registry.KMSClient, error) {
-	return NewClientWithOptions(uriPrefix, WithKMS(kms), WithEncryptionContextName(LegacyAdditionalData))
-}
-
 // Supported returns true if keyURI starts with the URI prefix provided when
 // creating the client.
 func (c *awsClient) Supported(keyURI string) bool {
@@ -274,12 +215,37 @@ func (c *awsClient) Supported(keyURI string) bool {
 //
 // See https://docs.aws.amazon.com/IAM/latest/UserGuide/reference-arns.html
 func (c *awsClient) GetAEAD(keyURI string) (tink.AEAD, error) {
+	return c.getAEAD(keyURI)
+}
+
+func (c *awsClient) getAEAD(keyURI string) (*AWSAEAD, error) {
 	if !c.Supported(keyURI) {
 		return nil, fmt.Errorf("keyURI must start with prefix %s, but got %s", c.keyURIPrefix, keyURI)
 	}
 
 	keyID := strings.TrimPrefix(keyURI, awsPrefix)
 	return newAWSAEAD(keyID, c.kms, c.encryptionContextName), nil
+}
+
+// NewAEADWithContext creates a client for keyURI using the provided options and
+// returns a [tink.AEADWithContext] for that key. This is a convenience function
+// that combines [NewClientWithOptions] and [awsClient.GetAEAD].
+//
+// keyURI must have the format:
+//
+//	aws-kms://arn:<partition>:kms:<region>:<path>
+func NewAEADWithContext(keyURI string, opts ...ClientOption) (tink.AEADWithContext, error) {
+	client, err := newClientWithOptions(keyURI, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	aead, err := client.getAEAD(keyURI)
+	if err != nil {
+		return nil, err
+	}
+
+	return aead, nil
 }
 
 func getKMS(uriPrefix string) (*kms.Client, error) {
